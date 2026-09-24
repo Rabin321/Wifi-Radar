@@ -14,33 +14,34 @@ class SignalNetwork {
   final int channel;
 }
 
-const List<SignalNetwork> demoNetworks = [
-  SignalNetwork(
-    ssid: 'Office WiFi',
-    bssid: '18:EF:63:AA:9A:15',
-    level: -54,
-    security: 'WPA2',
-    channel: 149,
-  ),
-  SignalNetwork(
-    ssid: 'Guest Access',
-    bssid: 'A0:80:50:12:49:FD',
-    level: -68,
-    security: 'Open',
-    channel: 11,
-  ),
-  SignalNetwork(
-    ssid: 'Living Room',
-    bssid: 'E8:48:B8:5C:12:0A',
-    level: -75,
-    security: 'WPA3',
-    channel: 6,
-  ),
-  SignalNetwork(
-    ssid: 'Studio Mesh',
-    bssid: '90:1A:CA:21:4D:70',
-    level: -82,
-    security: 'WPA2',
-    channel: 1,
-  ),
-];
+SignalNetwork? findConnectedNetwork(
+  String? ssid,
+  String? bssid,
+  List<SignalNetwork> networks,
+) {
+  final normalizedSsid = ssid?.trim().replaceAll('"', '');
+  final normalizedBssid = bssid?.trim().toUpperCase();
+
+  if ((normalizedSsid == null || normalizedSsid.isEmpty) &&
+      (normalizedBssid == null || normalizedBssid.isEmpty)) {
+    return null;
+  }
+
+  for (final network in networks) {
+    final matchingSsid = network.ssid.trim().replaceAll('"', '');
+    final matchingBssid = network.bssid.trim().toUpperCase();
+
+    final ssidMatches = normalizedSsid != null &&
+        normalizedSsid.isNotEmpty &&
+        matchingSsid == normalizedSsid;
+    final bssidMatches = normalizedBssid != null &&
+        normalizedBssid.isNotEmpty &&
+        matchingBssid == normalizedBssid;
+
+    if (ssidMatches || bssidMatches) {
+      return network;
+    }
+  }
+
+  return null;
+}

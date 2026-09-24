@@ -108,7 +108,7 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
     setState(() => _isScanning = true);
 
     try {
-      final currentName = await _readConnectedNetworkName();
+      final connectedDetails = await _readConnectedNetworkDetails();
       final canScan = await WiFiScan.instance.canStartScan(askPermissions: false);
 
       if (canScan == CanStartScan.yes ||
@@ -122,7 +122,11 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                 .where((network) => network.ssid.isNotEmpty)
                 .toList();
 
-            final connectedNetwork = _findConnectedNetwork(currentName, networks);
+            final connectedNetwork = findConnectedNetwork(
+              connectedDetails.ssid,
+              connectedDetails.bssid,
+              networks,
+            );
 
             setState(() {
               _networks = networks;
@@ -138,17 +142,17 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
 
       if (mounted) {
         setState(() {
-          _networks = demoNetworks;
+          _networks = const [];
           _connectedNetwork = null;
-          _status = 'Demo scan loaded';
+          _status = 'No Wi‑Fi networks detected';
         });
       }
     } catch (_) {
       if (mounted) {
         setState(() {
-          _networks = demoNetworks;
+          _networks = const [];
           _connectedNetwork = null;
-          _status = 'Demo scan loaded';
+          _status = 'No Wi‑Fi networks detected';
         });
       }
     } finally {
@@ -158,31 +162,15 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
     }
   }
 
-  Future<String?> _readConnectedNetworkName() async {
+  Future<({String? ssid, String? bssid})> _readConnectedNetworkDetails() async {
     try {
       final info = NetworkInfo();
-      final name = await info.getWifiName();
-      return name;
+      final ssid = await info.getWifiName();
+      final bssid = await info.getWifiBSSID();
+      return (ssid: ssid, bssid: bssid);
     } catch (_) {
-      return null;
+      return (ssid: null, bssid: null);
     }
-  }
-
-  SignalNetwork? _findConnectedNetwork(
-    String? ssid,
-    List<SignalNetwork> networks,
-  ) {
-    if (ssid == null || ssid.isEmpty || networks.isEmpty) {
-      return null;
-    }
-
-    for (final network in networks) {
-      if (network.ssid.trim() == ssid.trim()) {
-        return network;
-      }
-    }
-
-    return null;
   }
 
   Future<void> _openWifiSettings() async {
@@ -202,9 +190,8 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final networks = _networks.isNotEmpty ? _networks : demoNetworks;
-    final connectedNetwork = _connectedNetwork ??
-        (networks.isNotEmpty ? networks.first : null);
+    final networks = _networks;
+    final connectedNetwork = _connectedNetwork;
 
     return Scaffold(
       body: SafeArea(
