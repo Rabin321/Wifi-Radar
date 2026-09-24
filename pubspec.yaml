@@ -39,6 +39,8 @@ dependencies:
   permission_handler: ^13.0.2
   wifi_scan: ^0.5.0
   network_info_plus: ^8.2.1
+  wifi_iot: ^0.4.0
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

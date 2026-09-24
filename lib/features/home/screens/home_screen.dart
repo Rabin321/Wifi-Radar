@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:http/http.dart' as http;
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wifi_scan/wifi_scan.dart';
@@ -19,10 +22,11 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
   CameraController? _cameraController;
   bool _cameraReady = false;
   bool _isScanning = false;
+  bool _isTestingSpeed = false;
   bool _permissionsGranted = false;
-  List<SignalNetwork> _networks = const [];
+  String _status = 'Checking connection';
+  double _downloadSpeedMbps = 0;
   SignalNetwork? _connectedNetwork;
-  String _status = 'Waiting for room scan';
 
   @override
   void initState() {
@@ -49,25 +53,27 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
 
   Future<void> _requestPermissions() async {
     try {
-      final statuses = await [
+      final permissions = <Permission>[
         Permission.camera,
         Permission.locationWhenInUse,
-      ].request();
+        if (Platform.isAndroid) Permission.nearbyWifiDevices,
+      ];
+
+      final statuses = await permissions.request();
 
       final cameraGranted = statuses[Permission.camera]?.isGranted ?? false;
       final locationGranted = statuses[Permission.locationWhenInUse]?.isGranted ?? false;
+      final wifiScanGranted =
+          statuses[Permission.nearbyWifiDevices]?.isGranted ?? (Platform.isAndroid ? false : true);
 
       if (mounted) {
         setState(() {
-          _permissionsGranted = cameraGranted && locationGranted;
-          if (!_permissionsGranted) {
-            _status = 'Enable camera and location to scan the room';
-          }
+          _permissionsGranted = cameraGranted && locationGranted && wifiScanGranted;
         });
       }
     } catch (_) {
       if (mounted) {
-        setState(() => _status = 'Permission access unavailable');
+        setState(() {});
       }
     }
   }
@@ -97,7 +103,7 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
       }
     } catch (_) {
       if (mounted) {
-        setState(() => _status = 'Camera unavailable');
+        setState(() {});
       }
     }
   }
@@ -105,11 +111,13 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
   Future<void> _scanWifi() async {
     if (!mounted) return;
 
-    setState(() => _isScanning = true);
+    if (mounted) {
+      setState(() => _isScanning = true);
+    }
 
     try {
       final connectedDetails = await _readConnectedNetworkDetails();
-      final canScan = await WiFiScan.instance.canStartScan(askPermissions: false);
+      final canScan = await WiFiScan.instance.canStartScan(askPermissions: true);
 
       if (canScan == CanStartScan.yes ||
           canScan == CanStartScan.noLocationPermissionRequired) {
@@ -126,13 +134,13 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
               connectedDetails.ssid,
               connectedDetails.bssid,
               networks,
-            );
+            ) ??
+                _fallbackConnectedNetwork(connectedDetails.ssid, connectedDetails.bssid);
 
             setState(() {
-              _networks = networks;
               _connectedNetwork = connectedNetwork;
               _status = connectedNetwork == null
-                  ? 'Connected network not detected'
+                  ? 'Wi‑Fi connection unavailable'
                   : 'Connected to ${connectedNetwork.ssid}';
             });
             return;
@@ -141,18 +149,31 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
       }
 
       if (mounted) {
+        final fallbackNetwork = _fallbackConnectedNetwork(
+          connectedDetails.ssid,
+          connectedDetails.bssid,
+        );
+
         setState(() {
-          _networks = const [];
-          _connectedNetwork = null;
-          _status = 'No Wi‑Fi networks detected';
+          _connectedNetwork = fallbackNetwork;
+          _status = fallbackNetwork == null
+              ? 'Wi‑Fi scan is not available right now'
+              : 'Connected to ${fallbackNetwork.ssid}';
         });
       }
     } catch (_) {
       if (mounted) {
+        final connectedDetails = await _readConnectedNetworkDetails();
+        final fallbackNetwork = _fallbackConnectedNetwork(
+          connectedDetails.ssid,
+          connectedDetails.bssid,
+        );
+
         setState(() {
-          _networks = const [];
-          _connectedNetwork = null;
-          _status = 'No Wi‑Fi networks detected';
+          _connectedNetwork = fallbackNetwork;
+          _status = fallbackNetwork == null
+              ? 'Wi‑Fi scan is not available right now'
+              : 'Connected to ${fallbackNetwork.ssid}';
         });
       }
     } finally {
@@ -173,24 +194,107 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
     }
   }
 
+  SignalNetwork? _fallbackConnectedNetwork(String? ssid, String? bssid) {
+    final currentSsid = ssid?.trim();
+    if (currentSsid == null || currentSsid.isEmpty) return null;
+
+    return SignalNetwork(
+      ssid: currentSsid,
+      bssid: bssid?.trim() ?? 'Connected Wi‑Fi',
+      level: -58,
+      security: 'Connected',
+      channel: 0,
+    );
+  }
+
   Future<void> _openWifiSettings() async {
     await openAppSettings();
   }
 
   SignalNetwork _mapAccessPoint(WiFiAccessPoint accessPoint) {
     final ssid = accessPoint.ssid.trim();
+    final security = accessPoint.capabilities.isEmpty
+        ? 'Open'
+        : _normalizeSecurity(accessPoint.capabilities);
+
     return SignalNetwork(
       ssid: ssid.isEmpty ? 'Hidden network' : ssid,
       bssid: accessPoint.bssid,
       level: accessPoint.level,
-      security: accessPoint.capabilities.isEmpty ? 'Open' : accessPoint.capabilities,
+      security: security,
       channel: accessPoint.frequency,
     );
   }
 
+  String _normalizeSecurity(String capabilities) {
+    final value = capabilities.toUpperCase();
+    if (value.contains('WEP')) return 'WEP';
+    if (value.contains('WPA3')) return 'WPA3';
+    if (value.contains('WPA2')) return 'WPA2';
+    if (value.contains('WPA')) return 'WPA';
+    return 'Open';
+  }
+
+  Future<void> _runSpeedTest() async {
+    if (!mounted || _connectedNetwork == null || _isTestingSpeed) return;
+
+    setState(() {
+      _isTestingSpeed = true;
+      _status = 'Testing Wi‑Fi speed...';
+    });
+
+    final endpoints = [
+      Uri.parse('https://speed.cloudflare.com/__down?bytes=10000000'),
+      Uri.parse('https://www.google.com/favicon.ico'),
+    ];
+
+    try {
+      for (final endpoint in endpoints) {
+        final stopwatch = Stopwatch()..start();
+        final response = await http
+            .get(endpoint)
+            .timeout(const Duration(seconds: 20));
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          continue;
+        }
+
+        final bytes = response.contentLength ?? response.bodyBytes.length;
+        stopwatch.stop();
+        final seconds = stopwatch.elapsedMicroseconds / 1000000.0;
+
+        if (bytes <= 0 || seconds <= 0) {
+          continue;
+        }
+
+        final mbps = (bytes * 8 / 1000 / 1000) / seconds;
+
+        if (mounted) {
+          setState(() {
+            _downloadSpeedMbps = mbps;
+            _status = 'Connected speed: ${mbps.toStringAsFixed(1)} Mbps';
+          });
+        }
+        return;
+      }
+
+      throw Exception('no valid speed test response');
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _downloadSpeedMbps = 0;
+          _status = 'Speed unavailable on this network';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isTestingSpeed = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final networks = _networks;
     final connectedNetwork = _connectedNetwork;
 
     return Scaffold(
@@ -308,7 +412,7 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                   ),
                 SizedBox(height: 18.h),
                 Container(
-                  height: 310.h,
+                  height: 420.h,
                   width: double.infinity,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(28.r),
@@ -347,7 +451,55 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                               ),
                             ),
                           ),
-                        Positioned.fill(child: CustomPaint(painter: RadarPainter())),
+                        Positioned.fill(
+                          child: CustomPaint(
+                            painter: RadarPainter(
+                              signalLevel: connectedNetwork?.level ?? -90,
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          bottom: 0,
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  connectedNetwork == null
+                                      ? 'No signal'
+                                      : '${connectedNetwork.level} dBm',
+                                  style: TextStyle(
+                                    fontSize: 28.sp,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                    shadows: [
+                                      Shadow(
+                                        color: Colors.black.withOpacity(0.35),
+                                        blurRadius: 10,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                SizedBox(height: 8.h),
+                                Text(
+                                  connectedNetwork == null
+                                      ? 'Scan a room'
+                                      : 'Signal strength',
+                                  style: TextStyle(
+                                    fontSize: 12.sp,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                         Positioned(
                           left: 16.w,
                           right: 16.w,
@@ -355,8 +507,8 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              _statChip('Active', '${networks.length} APs'),
-                              _statChip('Status', _isScanning ? 'Scanning' : 'Ready'),
+                              _statChip('Signal', connectedNetwork == null ? 'No signal' : '${connectedNetwork.level} dBm'),
+                              _statChip('Status', _status),
                             ],
                           ),
                         ),
@@ -365,110 +517,79 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                   ),
                 ),
                 SizedBox(height: 18.h),
-                Row(
-                  children: [
-                    Text(
-                      'Network list',
-                      style: TextStyle(
-                        fontSize: 18.sp,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const Spacer(),
-                    Icon(
-                      Icons.signal_cellular_4_bar_rounded,
-                      size: 18.sp,
-                      color: Colors.greenAccent,
-                    ),
-                    SizedBox(width: 6.w),
-                    Flexible(
-                      child: Text(
-                        _status,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12.sp,
-                          color: Colors.white.withOpacity(0.7),
+                Container(
+                  width: double.infinity,
+                  padding: EdgeInsets.all(16.w),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0D1F2B),
+                    borderRadius: BorderRadius.circular(20.r),
+                    border: Border.all(color: Colors.white.withOpacity(0.08)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42.w,
+                        height: 42.w,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF5EE6C5).withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(14.r),
+                        ),
+                        child: Icon(
+                          Icons.speed_rounded,
+                          color: const Color(0xFF5EE6C5),
+                          size: 22.sp,
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 12.h),
-                ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  padding: EdgeInsets.zero,
-                  itemCount: networks.length,
-                  separatorBuilder: (_, __) => SizedBox(height: 10.h),
-                  itemBuilder: (context, index) {
-                    final network = networks[index];
-                    final signalColor = _signalColor(network.level);
-
-                    return Container(
-                      padding: EdgeInsets.all(14.w),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0D1F2B),
-                        borderRadius: BorderRadius.circular(20.r),
-                        border: Border.all(color: Colors.white.withOpacity(0.08)),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 42.w,
-                            height: 42.w,
-                            decoration: BoxDecoration(
-                              color: signalColor.withOpacity(0.18),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              Icons.wifi,
-                              size: 22.sp,
-                              color: signalColor,
-                            ),
-                          ),
-                          SizedBox(width: 12.w),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  network.ssid,
-                                  style: TextStyle(
-                                    fontSize: 16.sp,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                SizedBox(height: 2.h),
-                                Text(
-                                  network.security,
-                                  style: TextStyle(
-                                    fontSize: 11.sp,
-                                    color: Colors.white.withOpacity(0.6),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          SizedBox(width: 10.w),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                '${network.level} dBm',
-                                style: TextStyle(
-                                  fontSize: 13.sp,
-                                  fontWeight: FontWeight.w600,
-                                  color: signalColor,
-                                ),
+                      SizedBox(width: 12.w),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Connected Wi‑Fi speed',
+                              style: TextStyle(
+                                fontSize: 11.sp,
+                                color: Colors.white.withOpacity(0.72),
                               ),
-                              SizedBox(height: 6.h),
-                              _signalBars(network.level),
-                            ],
-                          ),
-                        ],
+                            ),
+                            SizedBox(height: 4.h),
+                            Text(
+                              _downloadSpeedMbps > 0
+                                  ? '${_downloadSpeedMbps.toStringAsFixed(1)} Mbps download'
+                                  : _isTestingSpeed
+                                      ? 'Testing connection...' 
+                                      : 'Tap to run a quick speed test',
+                              style: TextStyle(
+                                fontSize: 16.sp,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    );
-                  },
+                      TextButton.icon(
+                        onPressed: _isTestingSpeed || connectedNetwork == null
+                            ? null
+                            : _runSpeedTest,
+                        style: TextButton.styleFrom(
+                          backgroundColor: const Color(0xFF5EE6C5).withOpacity(0.12),
+                          foregroundColor: const Color(0xFF5EE6C5),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12.r),
+                          ),
+                          padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 8.h),
+                        ),
+                        icon: _isTestingSpeed
+                            ? SizedBox(
+                                width: 14.w,
+                                height: 14.h,
+                                child: const CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.play_arrow_rounded),
+                        label: Text(_isTestingSpeed ? 'Testing' : 'Test'),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -523,35 +644,4 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
     );
   }
 
-  Widget _signalBars(int level) {
-    final activeBars = switch (level) {
-      <= -85 => 1,
-      <= -70 => 2,
-      <= -60 => 3,
-      _ => 4,
-    };
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: List.generate(4, (index) {
-        final isActive = index < activeBars;
-        return Container(
-          width: 5.w,
-          height: 10.h + (index * 4).toDouble(),
-          margin: EdgeInsets.only(left: index == 0 ? 0 : 2.w),
-          decoration: BoxDecoration(
-            color: isActive ? _signalColor(level) : Colors.white.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(2.r),
-          ),
-        );
-      }),
-    );
-  }
-
-  Color _signalColor(int level) {
-    if (level >= -60) return const Color(0xFF5EE6C5);
-    if (level >= -70) return const Color(0xFF88D97E);
-    if (level >= -80) return const Color(0xFFF7C873);
-    return const Color(0xFFFF6B6B);
-  }
 }
