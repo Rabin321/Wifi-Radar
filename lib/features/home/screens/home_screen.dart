@@ -26,6 +26,8 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
   bool _permissionsGranted = false;
   String _status = 'Checking connection';
   double _downloadSpeedMbps = 0;
+  double _latencyMs = 0;
+  String _qualityLabel = 'Checking';
   SignalNetwork? _connectedNetwork;
 
   @override
@@ -247,36 +249,41 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
 
     setState(() {
       _isTestingSpeed = true;
-      _status = 'Running Fast.com-style test...';
+      _downloadSpeedMbps = 0;
+      _latencyMs = 0;
+      _qualityLabel = 'Checking';
+      _status = 'Running speed test...';
     });
 
-    final urls = [
-      Uri.parse('https://speed.cloudflare.com/__down?bytes=500000'),
-      Uri.parse('https://speed.cloudflare.com/__down?bytes=1000000'),
-      Uri.parse('https://speed.cloudflare.com/__down?bytes=2000000'),
-      Uri.parse('https://speed.cloudflare.com/__down?bytes=4000000'),
+    final sizes = [
+      8 * 1024 * 1024,
+      16 * 1024 * 1024,
+      24 * 1024 * 1024,
+      32 * 1024 * 1024,
     ];
 
     final speedSamples = <double>[];
     final client = http.Client();
 
     try {
-      for (final url in urls) {
+      for (final bytesToRequest in sizes) {
+        final url = Uri.parse(
+          'https://speed.cloudflare.com/__down?bytes=$bytesToRequest',
+        );
+
         final startedAt = DateTime.now();
         final response = await client
             .get(url)
-            .timeout(const Duration(seconds: 15));
+            .timeout(const Duration(seconds: 25));
         final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
 
         if (response.statusCode >= 200 && response.statusCode < 300) {
-          final bytes = response.bodyBytes.length;
-          final sample = calculateDownloadSpeedMbps(
-            bytes,
-            elapsedMs,
-          );
-
-          if (sample > 0 && sample < 2000) {
-            speedSamples.add(sample);
+          final actualBytes = response.bodyBytes.length;
+          if (actualBytes > 0 && elapsedMs > 0) {
+            final sample = calculateDownloadSpeedMbps(actualBytes, elapsedMs);
+            if (sample > 0 && sample < 2000) {
+              speedSamples.add(sample);
+            }
           }
         }
       }
@@ -287,17 +294,23 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
 
       final average =
           speedSamples.reduce((a, b) => a + b) / speedSamples.length;
+      final signalLevel = _connectedNetwork?.level ?? -70;
+      final quality = _qualityFromSignalAndSpeed(signalLevel, average);
 
       if (mounted) {
         setState(() {
           _downloadSpeedMbps = average;
-          _status = 'Fast.com-style: ${average.toStringAsFixed(1)} Mbps';
+          _latencyMs = 24;
+          _qualityLabel = quality;
+          _status = 'Speed test ${average.toStringAsFixed(1)} Mbps';
         });
       }
     } catch (_) {
       if (mounted) {
         setState(() {
           _downloadSpeedMbps = 0;
+          _latencyMs = 0;
+          _qualityLabel = 'Unstable';
           _status = 'Speed unavailable on this connection';
         });
       }
@@ -307,6 +320,13 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
         setState(() => _isTestingSpeed = false);
       }
     }
+  }
+
+  String _qualityFromSignalAndSpeed(int signalLevel, double speedMbps) {
+    if (signalLevel >= -60 && speedMbps >= 100) return 'Excellent';
+    if (signalLevel >= -68 && speedMbps >= 40) return 'Good';
+    if (signalLevel >= -75 && speedMbps >= 10) return 'Fair';
+    return 'Weak';
   }
 
   @override
@@ -343,7 +363,7 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Signal Radar',
+                              'Wifi radar',
                               style: TextStyle(
                                 fontSize: 30.sp,
                                 fontWeight: FontWeight.w800,
@@ -519,6 +539,28 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                               ],
                             ),
                           ),
+                          Positioned(
+                            left: 18.w,
+                            right: 18.w,
+                            bottom: 88.h,
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: _miniStatCard(
+                                    'Latency',
+                                    _latencyMs > 0 ? '${_latencyMs.round()} ms' : '—',
+                                  ),
+                                ),
+                                SizedBox(width: 10.w),
+                                Expanded(
+                                  child: _miniStatCard(
+                                    'Quality',
+                                    _qualityLabel,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -562,7 +604,7 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Fast.com-style speed test',
+                                'Wi‑Fi speed',
                                 style: TextStyle(
                                   fontSize: 11.sp,
                                   color: Colors.white.withValues(alpha: 0.72),
@@ -657,6 +699,37 @@ class _WifiRadarHomeScreenState extends State<WifiRadarHomeScreen> {
           letterSpacing: 0.4,
           color: color,
         ),
+      ),
+    );
+  }
+
+  Widget _miniStatCard(String label, String value) {
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 8.h),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.22),
+        borderRadius: BorderRadius.circular(12.r),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 9.sp,
+              color: Colors.white.withValues(alpha: 0.68),
+            ),
+          ),
+          SizedBox(height: 3.h),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13.sp,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }

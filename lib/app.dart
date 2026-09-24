@@ -13,9 +13,9 @@ class WifiRadarApp extends StatelessWidget {
       designSize: const Size(390, 844),
       minTextAdapt: true,
       splitScreenMode: true,
-      builder: (_, __) {
+      builder: (context, child) {
         return MaterialApp(
-          title: 'Wi‑Fi Radar',
+          title: 'Wifi radar',
           debugShowCheckedModeBanner: false,
           theme: buildAppTheme(),
           home: const WifiRadarHomeScreen(),
