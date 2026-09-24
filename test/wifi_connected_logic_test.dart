@@ -35,4 +35,16 @@ void main() {
     expect(findConnectedNetwork('Unknown WiFi', null, networks), isNull);
     expect(findConnectedNetwork(null, null, networks), isNull);
   });
+
+  test('calculates Mbps from transferred bytes and elapsed time', () {
+    expect(
+      calculateDownloadSpeedMbps(10 * 1000 * 1000, 1000),
+      closeTo(80, 0.1),
+    );
+
+    expect(
+      calculateDownloadSpeedMbps(5 * 1000 * 1000, 2000),
+      closeTo(20, 0.1),
+    );
+  });
 }

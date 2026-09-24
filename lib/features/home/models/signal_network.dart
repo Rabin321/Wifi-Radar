@@ -14,6 +14,16 @@ class SignalNetwork {
   final int channel;
 }
 
+double calculateDownloadSpeedMbps(int bytesTransferred, int elapsedMilliseconds) {
+  if (bytesTransferred <= 0 || elapsedMilliseconds <= 0) {
+    return 0;
+  }
+
+  final bits = bytesTransferred * 8.0;
+  final seconds = elapsedMilliseconds / 1000.0;
+  return bits / (1000 * 1000 * seconds);
+}
+
 SignalNetwork? findConnectedNetwork(
   String? ssid,
   String? bssid,
